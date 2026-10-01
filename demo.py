@@ -13,6 +13,26 @@ import threading
 import time
 from typing import Optional
 
+# 1. Auto-switch to .venv if running with system python and dependencies are missing
+REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+VENV_PYTHON = os.path.join(REPO_ROOT, ".venv", "bin", "python")
+
+if os.path.exists(VENV_PYTHON) and sys.executable != VENV_PYTHON:
+    try:
+        import httpx
+        import rich
+        import uvicorn
+        import fastapi
+    except ImportError:
+        os.execv(VENV_PYTHON, [VENV_PYTHON] + sys.argv)
+
+# 2. Add repo root and app/ directory to sys.path
+APP_DIR = os.path.join(REPO_ROOT, "app")
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+if APP_DIR not in sys.path:
+    sys.path.append(APP_DIR)
+
 import httpx
 import uvicorn
 from rich.console import Console

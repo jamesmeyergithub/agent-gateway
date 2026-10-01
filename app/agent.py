@@ -61,10 +61,13 @@ except ImportError:
 
 MODEL = "gemini-2.5-flash"
 PROJECT_ID = os.getenv("GOOGLE_CLOUD_PROJECT", "secureai-447220")
-REGION = os.getenv("GOOGLE_CLOUD_AGENT_ENGINE_LOCATION") or os.getenv("GOOGLE_CLOUD_REGION") or "us-west1"
+REGION = (
+    os.getenv("GOOGLE_CLOUD_LOCATION")
+    if os.getenv("GOOGLE_CLOUD_LOCATION") and os.getenv("GOOGLE_CLOUD_LOCATION") != "global"
+    else (os.getenv("GOOGLE_CLOUD_AGENT_ENGINE_LOCATION") or os.getenv("GOOGLE_CLOUD_REGION") or "us-west1")
+)
 
-if os.getenv("GOOGLE_CLOUD_LOCATION") == "global" or not os.getenv("GOOGLE_CLOUD_LOCATION"):
-    os.environ["GOOGLE_CLOUD_LOCATION"] = REGION
+os.environ["GOOGLE_CLOUD_LOCATION"] = REGION
 os.environ["GOOGLE_CLOUD_PROJECT"] = PROJECT_ID
 
 INSTRUCTION = """You are a customer service support agent deployed on Google Cloud Agent Platform.

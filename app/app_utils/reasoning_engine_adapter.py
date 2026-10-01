@@ -55,11 +55,14 @@ def attach_reasoning_engine_routes(app: FastAPI) -> None:
 
     def resolve_method(class_method: str, *, streaming: bool):
         rt = get_runtime()
+        # Prefer native async methods inside ASGI server to preserve event loop lifecycle
+        if streaming and class_method in ("stream_query", "async_stream_query"):
+            return getattr(rt, "async_stream_query")
+        if not streaming and class_method in ("query", "async_query"):
+            return getattr(rt, "async_query")
+
         allowed = streaming_methods if streaming else sync_methods
         if class_method not in allowed:
-            # Fallback for standard query methods
-            if class_method in ("stream_query", "async_stream_query"):
-                return getattr(rt, class_method)
             raise HTTPException(
                 status_code=404,
                 detail=f"Unsupported reasoning_engine method: {class_method!r}",
@@ -79,7 +82,9 @@ def attach_reasoning_engine_routes(app: FastAPI) -> None:
 
         async def generator():
             res = method(**kwargs)
-            if inspect.isasyncgen(res):
+            if inspect.iscoroutine(res):
+                res = await res
+            if hasattr(res, "__aiter__"):
                 async for event in res:
                     yield json.dumps(encoders.jsonable_encoder(event)) + "\n"
             else:
@@ -100,8 +105,10 @@ def attach_reasoning_engine_routes(app: FastAPI) -> None:
             kwargs["user_id"] = "playground-user"
 
         rt = get_runtime()
-        if class_method in ("query", "stream_query"):
-            events = list(rt.stream_query(**kwargs))
+        if class_method in ("query", "stream_query", "async_query", "async_stream_query"):
+            events = []
+            async for ev in rt.async_stream_query(**kwargs):
+                events.append(ev)
             return responses.JSONResponse(
                 content=encoders.jsonable_encoder({"output": events})
             )

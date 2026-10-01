@@ -61,9 +61,15 @@ def lookup_order(order_id: str) -> Dict[str, Any]:
     return {"status": "success", "order": ORDER_DB[order_id]}
 
 
+import os
 import httpx
 
-REMOTE_MCP_SERVER = "https://backend-tools.us-west1.run.app"
+REGION = (
+    os.getenv("GOOGLE_CLOUD_LOCATION")
+    if os.getenv("GOOGLE_CLOUD_LOCATION") and os.getenv("GOOGLE_CLOUD_LOCATION") != "global"
+    else (os.getenv("GOOGLE_CLOUD_AGENT_ENGINE_LOCATION") or os.getenv("GOOGLE_CLOUD_REGION") or "us-west1")
+)
+REMOTE_MCP_SERVER = f"https://backend-tools.{REGION}.run.app"
 
 
 def issue_refund(order_id: str, amount: float, reason: str = "Customer Request") -> Dict[str, Any]:

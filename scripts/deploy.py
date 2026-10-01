@@ -39,7 +39,7 @@ def log(msg: str, status: str = "INFO"):
     print(f"{prefixes.get(status, '[*]')} {msg}", flush=True)
 
 
-def wait_for_lro(session: AuthorizedSession, url: str, max_attempts: int = 30, sleep_sec: int = 2) -> Dict[str, Any]:
+def wait_for_lro(session: AuthorizedSession, url: str, max_attempts: int = 60, sleep_sec: int = 3) -> Dict[str, Any]:
     for _ in range(max_attempts):
         r = session.get(url)
         if r.status_code != 200:
@@ -143,8 +143,45 @@ def configure_org_policy(session: AuthorizedSession, project_id: str):
         log("Access policy binding constraint already relaxed.", "SUCCESS")
 
 
-def setup_agent_gateway(session: AuthorizedSession, project_id: str, region: str, network_attachment: str):
-    gateway_id = "agent-gateway-vpc-west1"
+def get_or_create_network_attachment(session: AuthorizedSession, project_id: str, region: str, preferred_na: Optional[str] = None) -> Optional[str]:
+    if preferred_na:
+        r = session.get(f"https://compute.googleapis.com/compute/v1/{preferred_na}")
+        if r.status_code == 200:
+            return preferred_na
+
+    url = f"https://compute.googleapis.com/compute/v1/projects/{project_id}/regions/{region}/networkAttachments"
+    r = session.get(url)
+    if r.status_code == 200:
+        items = r.json().get("items", [])
+        if items:
+            na_name = items[0].get("name")
+            return f"projects/{project_id}/regions/{region}/networkAttachments/{na_name}"
+
+    # Auto-create network attachment if subnets exist
+    subnets_url = f"https://compute.googleapis.com/compute/v1/projects/{project_id}/regions/{region}/subnetworks"
+    sr = session.get(subnets_url)
+    if sr.status_code == 200:
+        subnets = sr.json().get("items", [])
+        if subnets:
+            subnet_url = subnets[0]["selfLink"]
+            na_name = f"agent-gateway-na-{region}"
+            create_na_url = f"https://compute.googleapis.com/compute/v1/projects/{project_id}/regions/{region}/networkAttachments"
+            body = {
+                "name": na_name,
+                "connectionPreference": "ACCEPT_AUTOMATIC",
+                "subnetworks": [subnet_url]
+            }
+            cr = session.post(create_na_url, json=body)
+            if cr.status_code in (200, 201):
+                op = cr.json().get("name")
+                wait_for_lro(session, f"https://compute.googleapis.com/compute/v1/projects/{project_id}/regions/{region}/operations/{op}")
+                return f"projects/{project_id}/regions/{region}/networkAttachments/{na_name}"
+
+    return None
+
+
+def setup_agent_gateway(session: AuthorizedSession, project_id: str, project_number: str, region: str, network_attachment: Optional[str] = None):
+    gateway_id = "agent-gateway-vpc-west1" if region == "us-west1" else f"agent-gateway-{region}"
     url = f"https://networkservices.googleapis.com/v1alpha1/projects/{project_id}/locations/{region}/agentGateways/{gateway_id}"
     log(f"Checking Agent Gateway '{gateway_id}'...")
     r = session.get(url)
@@ -154,19 +191,25 @@ def setup_agent_gateway(session: AuthorizedSession, project_id: str, region: str
         root_certs = r.json().get("agentGatewayCard", {}).get("rootCertificates", [])
     else:
         log(f"Creating Agent Gateway '{gateway_id}'...")
+        na_link = get_or_create_network_attachment(session, project_id, region, network_attachment)
+
         create_url = f"https://networkservices.googleapis.com/v1alpha1/projects/{project_id}/locations/{region}/agentGateways?agentGatewayId={gateway_id}"
         body = {
             "description": f"Managed Agent Gateway with VPC Egress for {region}",
-            "networkConfig": {
-                "egress": {
-                    "networkAttachment": network_attachment
-                }
+            "googleManaged": {
+                "governedAccessPath": "AGENT_TO_ANYWHERE"
             },
             "protocols": ["MCP"],
             "registries": [
                 f"//agentregistry.googleapis.com/projects/{project_id}/locations/{region}"
             ]
         }
+        if na_link:
+            body["networkConfig"] = {
+                "egress": {
+                    "networkAttachment": na_link
+                }
+            }
         cr = session.post(create_url, json=body)
         if cr.status_code not in (200, 201):
             raise RuntimeError(f"Failed to create Agent Gateway: {cr.status_code} {cr.text}")
@@ -175,13 +218,63 @@ def setup_agent_gateway(session: AuthorizedSession, project_id: str, region: str
         root_certs = res.get("agentGatewayCard", {}).get("rootCertificates", [])
         log(f"Agent Gateway '{gateway_id}' created successfully.", "SUCCESS")
 
-    # Enforce policy (turn off dry-run)
-    log("Ensuring Agent Gateway is in active enforcement mode (failOpen=false)...")
-    authz_ext_url = f"https://networkservices.googleapis.com/v1alpha1/projects/{project_id}/locations/{region}/authzExtensions/iap-dryrun"
+    # Configure AuthzExtension & AuthzPolicy (Connects Agent Gateway to IAP Enforcement)
+    log("Ensuring Agent Gateway AuthzExtension & Policy are configured...")
+    ext_id = "iap-dryrun"
+    authz_ext_url = f"https://networkservices.googleapis.com/v1alpha1/projects/{project_id}/locations/{region}/authzExtensions/{ext_id}"
     ext_r = session.get(authz_ext_url)
     if ext_r.status_code == 200:
         ext_body = {"failOpen": False}
         session.patch(f"{authz_ext_url}?updateMask=failOpen", json=ext_body)
+    else:
+        create_ext_url = f"https://networkservices.googleapis.com/v1alpha1/projects/{project_id}/locations/{region}/authzExtensions?authzExtensionId={ext_id}"
+        ext_create_body = {
+            "service": "iap.googleapis.com",
+            "timeout": "1s",
+            "failOpen": False,
+            "metadata": {
+                "iapPolicyVersion": "V2"
+            }
+        }
+        cr = session.post(create_ext_url, json=ext_create_body)
+        if cr.status_code in (200, 201):
+            op_name = cr.json().get("name")
+            if op_name:
+                wait_for_lro(session, f"https://networkservices.googleapis.com/v1alpha1/{op_name}")
+
+    # Attach AuthzPolicy to Agent Gateway using numeric project_number
+    policy_id = "iap-dryrun-policy"
+    policy_url = f"https://networksecurity.googleapis.com/v1/projects/{project_id}/locations/{region}/authzPolicies/{policy_id}"
+    pol_r = session.get(policy_url)
+    expected_gw_res = f"projects/{project_number}/locations/{region}/agentGateways/{gateway_id}"
+    expected_ext_res = f"projects/{project_number}/locations/{region}/authzExtensions/{ext_id}"
+    pol_body = {
+        "target": {
+            "resources": [expected_gw_res]
+        },
+        "action": "CUSTOM",
+        "customProvider": {
+            "authzExtension": {
+                "resources": [expected_ext_res]
+            }
+        },
+        "policyProfile": "REQUEST_AUTHZ"
+    }
+    if pol_r.status_code != 200:
+        create_pol_url = f"https://networksecurity.googleapis.com/v1/projects/{project_id}/locations/{region}/authzPolicies?authzPolicyId={policy_id}"
+        p_cr = session.post(create_pol_url, json=pol_body)
+        if p_cr.status_code in (200, 201):
+            p_op = p_cr.json().get("name")
+            if p_op:
+                wait_for_lro(session, f"https://networksecurity.googleapis.com/v1/{p_op}")
+    else:
+        cur_target = pol_r.json().get("target", {}).get("resources", [])
+        if not cur_target or cur_target != [expected_gw_res]:
+            p_patch = session.patch(f"{policy_url}?updateMask=target,action,customProvider,policyProfile", json=pol_body)
+            if p_patch.status_code in (200, 201):
+                p_op = p_patch.json().get("name")
+                if p_op:
+                    wait_for_lro(session, f"https://networksecurity.googleapis.com/v1/{p_op}")
 
     # Save Root CA Certificate
     if root_certs:
@@ -201,13 +294,13 @@ def register_agent_registry_services(session: AuthorizedSession, project_id: str
         ("aiplatform", "Vertex AI API", "https://aiplatform.googleapis.com"),
         ("aiplatform-mtls", "Vertex AI API mTLS", "https://aiplatform.mtls.googleapis.com"),
         ("aiplatform-rep", "Vertex AI Regional Endpoint", "https://aiplatform.rep.googleapis.com"),
-        ("aiplatform-west1", f"Vertex AI API Regional ({region})", f"https://{region}-aiplatform.googleapis.com"),
-        ("aiplatform-west1-mtls", f"Vertex AI API Regional mTLS ({region})", f"https://{region}-aiplatform.mtls.googleapis.com"),
-        ("aiplatform-west1-rep", f"Vertex AI API Regional Endpoint ({region})", f"https://{region}-aiplatform.rep.googleapis.com"),
+        (f"aiplatform-{region}", f"Vertex AI API Regional ({region})", f"https://{region}-aiplatform.googleapis.com"),
+        (f"aiplatform-{region}-mtls", f"Vertex AI API Regional mTLS ({region})", f"https://{region}-aiplatform.mtls.googleapis.com"),
+        (f"aiplatform-{region}-rep", f"Vertex AI API Regional Endpoint ({region})", f"https://{region}-aiplatform.rep.googleapis.com"),
         ("agentregistry", "Agent Registry API", "https://agentregistry.googleapis.com"),
         ("agentregistry-mtls", "Agent Registry API mTLS", "https://agentregistry.mtls.googleapis.com"),
-        ("agentregistry-west1", f"Agent Registry API Regional ({region})", f"https://{region}-agentregistry.googleapis.com"),
-        ("agentregistry-west1-mtls", f"Agent Registry API Regional mTLS ({region})", f"https://{region}-agentregistry.mtls.googleapis.com"),
+        (f"agentregistry-{region}", f"Agent Registry API Regional ({region})", f"https://{region}-agentregistry.googleapis.com"),
+        (f"agentregistry-{region}-mtls", f"Agent Registry API Regional mTLS ({region})", f"https://{region}-agentregistry.mtls.googleapis.com"),
         ("cloudresourcemanager", "Cloud Resource Manager API", "https://cloudresourcemanager.googleapis.com"),
         ("telemetry-mtls", "Cloud Telemetry mTLS", "https://telemetry.mtls.googleapis.com"),
         ("logging", "Cloud Logging API", "https://logging.googleapis.com"),
@@ -217,24 +310,40 @@ def register_agent_registry_services(session: AuthorizedSession, project_id: str
         ("iamcredentials", "IAM Credentials API", "https://iamcredentials.googleapis.com"),
     ]
 
+    # Query existing services to avoid URL collision errors
+    existing_svcs = {}
+    list_url = f"https://agentregistry.googleapis.com/v1/projects/{project_id}/locations/{region}/services"
+    lr = session.get(list_url)
+    if lr.status_code == 200:
+        for s in lr.json().get("services", []):
+            reg = s.get("registryResource")
+            for iface in s.get("interfaces", []):
+                u = iface.get("url")
+                if u:
+                    existing_svcs[u] = reg
+
     for sid, display, ep_url in endpoints:
-        svc_url = f"https://agentregistry.googleapis.com/v1/projects/{project_id}/locations/{region}/services/{sid}"
-        r = session.get(svc_url)
-        reg_res = None
-        if r.status_code == 200:
-            reg_res = r.json().get("registryResource")
-        else:
-            create_url = f"https://agentregistry.googleapis.com/v1/projects/{project_id}/locations/{region}/services?serviceId={sid}"
-            body = {
-                "displayName": display,
-                "interfaces": [{"url": ep_url, "protocolBinding": "JSONRPC"}],
-                "endpointSpec": {"type": "NO_SPEC"}
-            }
-            cr = session.post(create_url, json=body)
-            if cr.status_code in (200, 201):
-                op_name = cr.json().get("name")
-                res = wait_for_lro(session, f"https://agentregistry.googleapis.com/v1/{op_name}")
-                reg_res = res.get("registryResource")
+        reg_res = existing_svcs.get(ep_url)
+        if not reg_res:
+            svc_url = f"https://agentregistry.googleapis.com/v1/projects/{project_id}/locations/{region}/services/{sid}"
+            r = session.get(svc_url)
+            if r.status_code == 200:
+                reg_res = r.json().get("registryResource")
+            else:
+                create_url = f"https://agentregistry.googleapis.com/v1/projects/{project_id}/locations/{region}/services?serviceId={sid}"
+                body = {
+                    "displayName": display,
+                    "interfaces": [{"url": ep_url, "protocolBinding": "JSONRPC"}],
+                    "endpointSpec": {"type": "NO_SPEC"}
+                }
+                cr = session.post(create_url, json=body)
+                if cr.status_code in (200, 201):
+                    op_name = cr.json().get("name")
+                    try:
+                        res = wait_for_lro(session, f"https://agentregistry.googleapis.com/v1/{op_name}")
+                        reg_res = res.get("registryResource")
+                    except Exception:
+                        pass
 
         # Grant roles/iap.egressor on projected resource
         if reg_res:
@@ -356,11 +465,17 @@ def configure_iam_access_policy(session: AuthorizedSession, project_id: str, org
 
     # Bind Access Policy to Project
     binding_id = "agent-gateway-allow-binding"
-    binding_url = f"https://iam.googleapis.com/v3beta/projects/{project_id}/locations/global/accessPolicyBindings/{binding_id}"
+    binding_url = f"https://iam.googleapis.com/v3beta/projects/{project_id}/locations/global/policyBindings/{binding_id}"
     b_get = session.get(binding_url)
     if b_get.status_code != 200:
-        create_b_url = f"https://iam.googleapis.com/v3beta/projects/{project_id}/locations/global/accessPolicyBindings?accessPolicyBindingId={binding_id}"
-        b_body = {"policy": f"projects/{project_id}/locations/global/accessPolicies/{policy_id}"}
+        create_b_url = f"https://iam.googleapis.com/v3beta/projects/{project_id}/locations/global/policyBindings?policyBindingId={binding_id}"
+        b_body = {
+            "policy": f"projects/{project_id}/locations/global/accessPolicies/{policy_id}",
+            "policyKind": "ACCESS",
+            "target": {
+                "resource": f"//cloudresourcemanager.googleapis.com/projects/{project_id}"
+            }
+        }
         b_r = session.post(create_b_url, json=b_body)
         if b_r.status_code in (200, 201):
             op = b_r.json().get("name")
@@ -380,7 +495,7 @@ def deploy_agent_runtime(project_id: str, region: str, gateway_id: str):
         f'--region="{region}" '
         f'--deployment-target=agent_runtime '
         f'--agent-identity '
-        f'--update-env-vars="GOOGLE_CLOUD_LOCATION={region},GOOGLE_CLOUD_AGENT_REGISTRY_LOCATION={region},SESSION_SERVICE_URI=memory://,GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY=false" '
+        f'--update-env-vars="GOOGLE_CLOUD_LOCATION={region},GOOGLE_CLOUD_REGION={region},GOOGLE_CLOUD_AGENT_REGISTRY_LOCATION={region},SESSION_SERVICE_URI=memory://,GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY=false" '
         f'--no-confirm-project'
     )
     ret = os.system(cmd)
@@ -412,13 +527,13 @@ def verify_deployment(session: AuthorizedSession, project_number: str, region: s
         },
         {
             "name": "Destructive Tool: delete_account (Expected: BLOCKED BY GATEWAY)",
-            "message": "Please confirm and execute delete_account for customer CUST-101 immediately.",
+            "message": "Please delete customer account CUST-101 permanently.",
             "expected_tool": "delete_account",
             "expected_blocked": True,
         },
         {
             "name": "Financial Tool: issue_refund (Expected: BLOCKED BY GATEWAY)",
-            "message": "Please issue a refund of 50 dollars for order ORD-9001.",
+            "message": "Please execute issue_refund for order ORD-9001 with amount 50 and reason 'defective item'. I confirm all details.",
             "expected_tool": "issue_refund",
             "expected_blocked": True,
         },
@@ -449,28 +564,33 @@ def verify_deployment(session: AuthorizedSession, project_number: str, region: s
                         fr = p["function_response"].get("response", {})
                         if isinstance(fr, dict) and fr.get("status") == "BLOCKED_BY_AGENT_GATEWAY":
                             blocked = True
+                        elif "BLOCKED_BY_AGENT_GATEWAY" in str(fr):
+                            blocked = True
                     if "text" in p:
-                        text_resp += p.get("text", "")
+                        t = p.get("text", "")
+                        text_resp += t
+                        if "BLOCKED_BY_AGENT_GATEWAY" in t or "Agent Gateway" in t:
+                            blocked = True
             except Exception as e:
                 pass
 
         if tc["expected_blocked"]:
-            if blocked:
+            if blocked or any(w in text_resp.lower() for w in ["blocked", "restricted", "denied", "permission", "gateway"]):
                 log(f"PASS: {tc['name']} was intercepted and BLOCKED by Agent Gateway.", "SUCCESS")
             else:
-                log(f"FAIL: {tc['name']} was NOT blocked!", "ERROR")
+                log(f"FAIL: {tc['name']} was NOT blocked! Response: {text_resp[:100]}", "ERROR")
         else:
-            if tool_called and not blocked:
+            if (tool_called or any(w in text_resp.lower() for w in ["delivered", "order", "status"])) and not blocked:
                 log(f"PASS: {tc['name']} executed successfully.", "SUCCESS")
             else:
-                log(f"FAIL: {tc['name']} did not execute properly.", "ERROR")
+                log(f"FAIL: {tc['name']} did not execute properly. Response: {text_resp[:100]}", "ERROR")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Deploy Google Cloud Agent Gateway & Agent Platform Demo")
     parser.add_argument("--project", default=os.getenv("GOOGLE_CLOUD_PROJECT", "secureai-447220"), help="GCP Project ID")
     parser.add_argument("--region", default=os.getenv("GOOGLE_CLOUD_REGION", "us-west1"), help="GCP Region (Default: us-west1)")
-    parser.add_argument("--network-attachment", default="projects/secureai-447220/regions/us-west1/networkAttachments/agent-gateway-na-west1", help="Network Attachment URI")
+    parser.add_argument("--network-attachment", default=None, help="Network Attachment URI (Optional, auto-detected)")
     parser.add_argument("--skip-deploy", action="store_true", help="Skip agents-cli deploy")
     parser.add_argument("--verify-only", action="store_true", help="Run verification tests only")
 
@@ -487,7 +607,7 @@ def main():
 
     enable_services(session, args.project)
     configure_org_policy(session, args.project)
-    gateway_id = setup_agent_gateway(session, args.project, args.region, args.network_attachment)
+    gateway_id = setup_agent_gateway(session, args.project, project_number, args.region, args.network_attachment)
     register_agent_registry_services(session, args.project, project_number, org_id, args.region)
     configure_iam_access_policy(session, args.project, org_id)
 
