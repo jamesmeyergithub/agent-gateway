@@ -1,3 +1,14 @@
+# ==============================================================================
+# ARCHITECTURAL REFERENCE ONLY
+# ------------------------------------------------------------------------------
+# This Terraform configuration serves as a conceptual architectural template.
+# It is NOT used for live deployment. 
+#
+# To deploy the live, functional Google Cloud Agent Gateway & Agent Platform demo,
+# use the turnkey deployment script:
+#   ./scripts/deploy_gcp.sh --project YOUR_PROJECT_ID --region us-west1
+# ==============================================================================
+
 terraform {
   required_version = ">= 1.5.0"
   required_providers {
