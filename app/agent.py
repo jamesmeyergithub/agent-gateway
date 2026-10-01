@@ -60,7 +60,19 @@ except ImportError:
     )
 
 MODEL = "gemini-2.5-flash"
-PROJECT_ID = os.getenv("GOOGLE_CLOUD_PROJECT", "secureai-447220")
+
+import google.auth
+
+PROJECT_ID = os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("CLOUDSDK_CORE_PROJECT")
+if not PROJECT_ID:
+    try:
+        _, auth_proj = google.auth.default()
+        PROJECT_ID = auth_proj
+    except Exception:
+        PROJECT_ID = None
+
+if not PROJECT_ID:
+    raise ValueError("GOOGLE_CLOUD_PROJECT must be set or detectable via gcloud credentials.")
 REGION = (
     os.getenv("GOOGLE_CLOUD_LOCATION")
     if os.getenv("GOOGLE_CLOUD_LOCATION") and os.getenv("GOOGLE_CLOUD_LOCATION") != "global"

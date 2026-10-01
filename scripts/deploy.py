@@ -587,8 +587,20 @@ def verify_deployment(session: AuthorizedSession, project_number: str, region: s
 
 
 def main():
+    default_project = os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("CLOUDSDK_CORE_PROJECT")
+    if not default_project:
+        try:
+            _, default_project = google.auth.default()
+        except Exception:
+            default_project = None
+
     parser = argparse.ArgumentParser(description="Deploy Google Cloud Agent Gateway & Agent Platform Demo")
-    parser.add_argument("--project", default=os.getenv("GOOGLE_CLOUD_PROJECT", "secureai-447220"), help="GCP Project ID")
+    parser.add_argument(
+        "--project",
+        default=default_project,
+        required=default_project is None,
+        help="GCP Project ID (defaults to active gcloud project)",
+    )
     parser.add_argument("--region", default=os.getenv("GOOGLE_CLOUD_REGION", "us-west1"), help="GCP Region (Default: us-west1)")
     parser.add_argument("--network-attachment", default=None, help="Network Attachment URI (Optional, auto-detected)")
     parser.add_argument("--skip-deploy", action="store_true", help="Skip agents-cli deploy")

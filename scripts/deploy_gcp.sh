@@ -9,10 +9,10 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # Resolve Python environment
 PYTHON_BIN="python3"
-if [ -f "${ROOT_DIR}/.venv/bin/python" ]; then
+if [ -n "${VIRTUAL_ENV:-}" ] && [ -f "${VIRTUAL_ENV}/bin/python" ]; then
+  PYTHON_BIN="${VIRTUAL_ENV}/bin/python"
+elif [ -f "${ROOT_DIR}/.venv/bin/python" ]; then
   PYTHON_BIN="${ROOT_DIR}/.venv/bin/python"
-elif [ -f "/Users/jamesmeyer/gcp-docs-agent/.venv/bin/python" ]; then
-  PYTHON_BIN="/Users/jamesmeyer/gcp-docs-agent/.venv/bin/python"
 fi
 
 echo "=================================================================="
