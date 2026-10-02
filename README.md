@@ -92,7 +92,7 @@ To deploy this live setup into any Google Cloud project (with native Agent Gatew
 ### 2. Run the Turnkey Deployment
 Execute the automated deployment script:
 ```bash
-./scripts/deploy_gcp.sh --project YOUR_PROJECT_ID --region us-west1
+./scripts/deploy_gcp.sh --project YOUR_PROJECT_ID --region YOUR_REGION
 ```
 
 This single command automatically orchestrates:
@@ -161,9 +161,9 @@ Tests that unauthorized financial transactions cannot be executed without specif
 ---
 
 ### 4. Automated Verification
-To run all three test scenarios automatically against the live deployed reasoning engine:
+To run all three test scenarios automatically against your deployed reasoning engine:
 ```bash
-./scripts/deploy_gcp.sh --verify-only
+./scripts/deploy_gcp.sh --project YOUR_PROJECT_ID --region YOUR_REGION --verify-only
 ```
 
 ---
@@ -171,7 +171,7 @@ To run all three test scenarios automatically against the live deployed reasonin
 ### 5. Teardown & Clean Up
 To remove all deployed resources (Vertex AI Reasoning Engine, Agent Gateway, Agent Registry endpoints, Service Extensions, and regional networking attachments):
 ```bash
-./scripts/cleanup.sh --project YOUR_PROJECT_ID --region us-west1 --yes
+./scripts/cleanup.sh --project YOUR_PROJECT_ID --region YOUR_REGION --yes
 ```
 The cleanup script automatically checks for any active gateways in other regions before removing global IAM access policies, preserving multi-region environments safely.
 
