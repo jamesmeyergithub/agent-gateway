@@ -235,44 +235,44 @@ fi
 log_header "Step 4: Deleting Service Extensions (AuthzPolicy & AuthzExtension)"
 
 # 4a. Delete AuthzPolicy first
-AUTHZ_POL_URL="https://networksecurity.googleapis.com/v1/projects/${PROJECT_ID}/locations/${REGION}/authzPolicies/iap-dryrun-policy"
-POL_CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $TOKEN" "$AUTHZ_POL_URL")
-if [[ "$POL_CODE" == "200" ]]; then
-  log_info "Deleting AuthzPolicy 'iap-dryrun-policy' in '$REGION'..."
-  DEL_OP=$(curl -s -X DELETE -H "Authorization: Bearer $TOKEN" "$AUTHZ_POL_URL" | grep -o "\"name\": *\"[^\"]*\"" | cut -d'"' -f4 || true)
-  if [[ -n "$DEL_OP" ]]; then
-    while true; do
-      OP_STATUS=$(curl -s -H "Authorization: Bearer $TOKEN" "https://networksecurity.googleapis.com/v1/${DEL_OP}")
-      if echo "$OP_STATUS" | grep -q "\"done\": true"; then
-        log_success "AuthzPolicy deleted."
-        break
-      fi
-      sleep 2
-    done
+for POL_NAME in "${AUTHZ_POLICY_ID:-iap-auth-policy}" "iap-dryrun-policy"; do
+  AUTHZ_POL_URL="https://networksecurity.googleapis.com/v1/projects/${PROJECT_ID}/locations/${REGION}/authzPolicies/${POL_NAME}"
+  POL_CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $TOKEN" "$AUTHZ_POL_URL")
+  if [[ "$POL_CODE" == "200" ]]; then
+    log_info "Deleting AuthzPolicy '${POL_NAME}' in '$REGION'..."
+    DEL_OP=$(curl -s -X DELETE -H "Authorization: Bearer $TOKEN" "$AUTHZ_POL_URL" | grep -o "\"name\": *\"[^\"]*\"" | cut -d'"' -f4 || true)
+    if [[ -n "$DEL_OP" ]]; then
+      while true; do
+        OP_STATUS=$(curl -s -H "Authorization: Bearer $TOKEN" "https://networksecurity.googleapis.com/v1/${DEL_OP}")
+        if echo "$OP_STATUS" | grep -q "\"done\": true"; then
+          log_success "AuthzPolicy '${POL_NAME}' deleted."
+          break
+        fi
+        sleep 2
+      done
+    fi
   fi
-else
-  log_info "AuthzPolicy not found or already deleted."
-fi
+done
 
 # 4b. Delete AuthzExtension second
-AUTHZ_EXT_URL="https://networkservices.googleapis.com/v1alpha1/projects/${PROJECT_ID}/locations/${REGION}/authzExtensions/iap-dryrun"
-EXT_CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $TOKEN" "$AUTHZ_EXT_URL")
-if [[ "$EXT_CODE" == "200" ]]; then
-  log_info "Deleting AuthzExtension 'iap-dryrun' in '$REGION'..."
-  DEL_OP=$(curl -s -X DELETE -H "Authorization: Bearer $TOKEN" "$AUTHZ_EXT_URL" | grep -o "\"name\": *\"[^\"]*\"" | cut -d'"' -f4 || true)
-  if [[ -n "$DEL_OP" ]]; then
-    while true; do
-      OP_STATUS=$(curl -s -H "Authorization: Bearer $TOKEN" "https://networkservices.googleapis.com/v1alpha1/${DEL_OP}")
-      if echo "$OP_STATUS" | grep -q "\"done\": true"; then
-        log_success "AuthzExtension deleted."
-        break
-      fi
-      sleep 2
-    done
+for EXT_NAME in "${AUTHZ_EXTENSION_ID:-iap-auth}" "iap-dryrun"; do
+  AUTHZ_EXT_URL="https://networkservices.googleapis.com/v1alpha1/projects/${PROJECT_ID}/locations/${REGION}/authzExtensions/${EXT_NAME}"
+  EXT_CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $TOKEN" "$AUTHZ_EXT_URL")
+  if [[ "$EXT_CODE" == "200" ]]; then
+    log_info "Deleting AuthzExtension '${EXT_NAME}' in '$REGION'..."
+    DEL_OP=$(curl -s -X DELETE -H "Authorization: Bearer $TOKEN" "$AUTHZ_EXT_URL" | grep -o "\"name\": *\"[^\"]*\"" | cut -d'"' -f4 || true)
+    if [[ -n "$DEL_OP" ]]; then
+      while true; do
+        OP_STATUS=$(curl -s -H "Authorization: Bearer $TOKEN" "https://networkservices.googleapis.com/v1alpha1/${DEL_OP}")
+        if echo "$OP_STATUS" | grep -q "\"done\": true"; then
+          log_success "AuthzExtension '${EXT_NAME}' deleted."
+          break
+        fi
+        sleep 2
+      done
+    fi
   fi
-else
-  log_info "AuthzExtension not found or already deleted."
-fi
+done
 
 # ------------------------------------------------------------------------------
 # Step 5: Delete Agent Gateway

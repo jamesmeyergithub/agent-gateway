@@ -28,8 +28,8 @@ import google.auth
 from google.auth.transport.requests import AuthorizedSession
 DEFAULT_REGION = os.getenv("GOOGLE_CLOUD_LOCATION") or os.getenv("GOOGLE_CLOUD_REGION") or "us-west1"
 DEFAULT_GATEWAY_PREFIX = os.getenv("AGENT_GATEWAY_PREFIX", "agent-gateway")
-DEFAULT_AUTHZ_EXT_ID = os.getenv("AUTHZ_EXTENSION_ID", "iap-dryrun")
-DEFAULT_AUTHZ_POLICY_ID = os.getenv("AUTHZ_POLICY_ID", "iap-dryrun-policy")
+DEFAULT_AUTHZ_EXT_ID = os.getenv("AUTHZ_EXTENSION_ID", "iap-auth")
+DEFAULT_AUTHZ_POLICY_ID = os.getenv("AUTHZ_POLICY_ID", "iap-auth-policy")
 DEFAULT_IAM_POLICY_ID = os.getenv("IAM_ACCESS_POLICY_ID", "agent-gateway-allow-policy")
 DEFAULT_IAM_BINDING_ID = os.getenv("IAM_POLICY_BINDING_ID", "agent-gateway-allow-binding")
 
