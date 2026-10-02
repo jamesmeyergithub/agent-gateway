@@ -22,12 +22,12 @@ flowchart LR
     subgraph PlatformLayer["Google Cloud Agent Platform"]
         subgraph Runtime["Agent Platform Runtime"]
             Agent["🤖 Gemini Agent<br/>(ADK / Vertex AI)"]
-            Identity["🆔 Agent Identity (SPIFFE)<br/><code>spiffe://.../agent/tier1-support</code>"]
+            Identity["🆔 Native Agent Identity<br/><code>principal://agents.global.org-...</code>"]
         end
 
         subgraph Gateway["Managed Agent Gateway"]
             PEP["🚪 Policy Enforcement Point (PEP)"]
-            IAM["📋 Google Cloud IAM Engine<br/>(Default-Deny Policy Bindings)"]
+            IAM["📋 Google Cloud IAM Engine<br/>(Unified Access Policy / CEL Rules)"]
         end
     end
 
@@ -50,27 +50,26 @@ flowchart LR
 * **Centralized Egress & Ingress**: All agent communications (tool calls, Model Context Protocol requests, and Agent-to-Agent interactions) pass through Agent Gateway.
 * **Tool-Level IAM Enforcement**: Checks whether the calling agent possesses authorization for the specific tool before forwarding the request to downstream services.
 
-### 2. First-Class Agent Identity (SPIFFE)
-* **Not Generic Service Accounts**: Agents are assigned native **Agent Identities** backed by the CNCF **SPIFFE** standard:
+### 2. First-Class Agent Identity (Workload Identity & SPIFFE)
+* **Not Generic Service Accounts**: Agents deployed on Vertex AI Agent Runtime receive native cryptographic identities minted by the Agent Platform:
   ```
-  spiffe://<project-id>.agentplatform.id.goog/agent/<agent-id>
+  principal://agents.global.org-<ORG_ID>.system.id.goog/resources/aiplatform/projects/<PROJECT_NUM>/locations/<REGION>/reasoningEngines/<ENGINE_ID>
   ```
-  or Google Cloud Principal URI:
-  ```
-  principal://agentidentity.googleapis.com/projects/<project-id>/locations/global/agentIdentities/<agent-id>
-  ```
-* **Cryptographically Bound**: Managed by Agent Platform Runtime with short-lived X.509 certificates and DPoP (Demonstrating Proof-of-Possession) tokens.
-* **Per-Instance Auditability**: Cloud Logging records actions taken by the exact agent instance rather than an opaque shared service account.
+* **Cryptographically Bound**: Managed by Agent Platform Runtime with short-lived certificates and mTLS session attestation directly to the Agent Gateway (`240.0.0.2:443`).
+* **Per-Instance Auditability**: Cloud Logging and Cloud Trace record actions taken by the exact agent instance rather than an opaque shared service account.
 
 ---
 
-## 📋 IAM Role & Permission Matrix for Agent Identities
+## 📋 Google Cloud IAM Unified Access Policy Rules
 
-| Agent Identity (SPIFFE Principal) | Bound IAM Role | Granted Permissions | Authorized Tools | Target Service |
+In Google Cloud, tool authorization is enforced at the network boundary using **Google Cloud IAM Unified Access Policies (IAM v3beta)** with Common Expression Language (CEL) conditions:
+
+| Policy Rule | Effect | CEL Condition / Expression | Target Operation | Boundary Enforcement |
 | :--- | :--- | :--- | :--- | :--- |
-| `spiffe://.../agent/tier1-support-agent` | `roles/agentgateway.supportViewer` | `tools.customers.get`<br/>`tools.orders.get`<br/>`services.customerData.read` | `view_customer_profile`<br/>`lookup_order` | `customerData` |
-| `spiffe://.../agent/billing-specialist` | `roles/agentgateway.billingAdmin` | `tools.customers.get`<br/>`tools.orders.get`<br/>`tools.payments.refund`<br/>`services.paymentProcessing.write` | `view_customer_profile`<br/>`lookup_order`<br/>`issue_refund` | `customerData`<br/>`paymentProcessing` |
-| `spiffe://.../agent/secops-admin` | `roles/agentgateway.securityAdmin` | `tools.identity.delete`<br/>`services.identityAdmin.write` | `delete_account` | `identityAdmin` |
+| **Deny Destructive & Financial Actions** | `DENY` | `destination.agent_registry.mcp_server.tool.name == 'delete_account' \|\| destination.agent_registry.mcp_server.tool.name == 'issue_refund'` | `iap.googleapis.com/resources.egressViaIAP` | **🛑 BLOCKED (HTTP 403 Forbidden)**<br/>Request intercepted and dropped at Agent Gateway proxy before backend execution |
+| **Allow Read Tools & Platform Egress** | `ALLOW` | `destination.unregistered.host.endsWith('googleapis.com') \|\| destination.is_registered == true` | `iap.googleapis.com/resources.egressViaIAP` | **✅ ALLOWED (HTTP 200 OK)**<br/>Permits legitimate queries (`lookup_order`, `view_customer_profile`, Google APIs) |
+
+---
 
 ## ☁️ Quickstart: Turnkey Google Cloud Deployment
 
@@ -99,7 +98,7 @@ Execute the automated deployment script:
 This single command automatically orchestrates:
 1. **API Enablement**: Enables `aiplatform`, `agentregistry`, `networkservices`, `iap`, `iam`, etc.
 2. **Org Policy**: Disables constraints on IAM v3beta Unified Access Policy bindings.
-3. **Agent Gateway**: Creates and configures `agent-gateway-vpc-west1` with VPC network egress.
+3. **Agent Gateway**: Creates and configures the regional Agent Gateway (`agent-gateway-<region>`) with VPC network egress.
 4. **Certificate Management**: Downloads Gateway Root CA and configures TLS trust.
 5. **Agent Registry**: Registers all platform endpoints and the `backend-tools` MCP server with tool specifications (`lookup_order`, `view_customer_profile`, `delete_account`, `issue_refund`).
 6. **IAP Roles**: Configures `roles/iap.egressor` on projected registry endpoints.
