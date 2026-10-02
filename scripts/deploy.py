@@ -26,6 +26,12 @@ import urllib.parse
 import certifi
 import google.auth
 from google.auth.transport.requests import AuthorizedSession
+DEFAULT_REGION = os.getenv("GOOGLE_CLOUD_LOCATION") or os.getenv("GOOGLE_CLOUD_REGION") or "us-west1"
+DEFAULT_GATEWAY_PREFIX = os.getenv("AGENT_GATEWAY_PREFIX", "agent-gateway")
+DEFAULT_AUTHZ_EXT_ID = os.getenv("AUTHZ_EXTENSION_ID", "iap-dryrun")
+DEFAULT_AUTHZ_POLICY_ID = os.getenv("AUTHZ_POLICY_ID", "iap-dryrun-policy")
+DEFAULT_IAM_POLICY_ID = os.getenv("IAM_ACCESS_POLICY_ID", "agent-gateway-allow-policy")
+DEFAULT_IAM_BINDING_ID = os.getenv("IAM_POLICY_BINDING_ID", "agent-gateway-allow-binding")
 
 
 def log(msg: str, status: str = "INFO"):
@@ -180,17 +186,45 @@ def get_or_create_network_attachment(session: AuthorizedSession, project_id: str
     return None
 
 
-def setup_agent_gateway(session: AuthorizedSession, project_id: str, project_number: str, region: str, network_attachment: Optional[str] = None):
-    gateway_id = "agent-gateway-vpc-west1" if region == "us-west1" else f"agent-gateway-{region}"
+def setup_agent_gateway(
+    session: AuthorizedSession,
+    project_id: str,
+    project_number: str,
+    region: str,
+    gateway_id: Optional[str] = None,
+    network_attachment: Optional[str] = None,
+    authz_ext_id: Optional[str] = None,
+    authz_policy_id: Optional[str] = None,
+) -> str:
+    # Resolve gateway_id dynamically: parameter -> env var -> auto-discover existing in region -> standard name
+    if not gateway_id:
+        gateway_id = os.getenv("AGENT_GATEWAY_ID")
+
+    if not gateway_id:
+        # Check if an Agent Gateway already exists in this project and region
+        gw_list_url = f"https://networkservices.googleapis.com/v1alpha1/projects/{project_id}/locations/{region}/agentGateways"
+        r_list = session.get(gw_list_url)
+        if r_list.status_code == 200:
+            existing_gws = r_list.json().get("agentGateways", [])
+            if existing_gws:
+                gateway_id = existing_gws[0]["name"].split("/")[-1]
+                log(f"Auto-discovered existing Agent Gateway: '{gateway_id}'")
+
+    if not gateway_id:
+        gateway_id = f"{DEFAULT_GATEWAY_PREFIX}-{region}"
+
+    ext_id = authz_ext_id or os.getenv("AUTHZ_EXTENSION_ID", DEFAULT_AUTHZ_EXT_ID)
+    policy_id = authz_policy_id or os.getenv("AUTHZ_POLICY_ID", DEFAULT_AUTHZ_POLICY_ID)
+
     url = f"https://networkservices.googleapis.com/v1alpha1/projects/{project_id}/locations/{region}/agentGateways/{gateway_id}"
-    log(f"Checking Agent Gateway '{gateway_id}'...")
+    log(f"Checking Agent Gateway '{gateway_id}' in region '{region}'...")
     r = session.get(url)
     root_certs = []
     if r.status_code == 200:
         log(f"Agent Gateway '{gateway_id}' already exists.", "SUCCESS")
         root_certs = r.json().get("agentGatewayCard", {}).get("rootCertificates", [])
     else:
-        log(f"Creating Agent Gateway '{gateway_id}'...")
+        log(f"Creating Agent Gateway '{gateway_id}' in region '{region}'...")
         na_link = get_or_create_network_attachment(session, project_id, region, network_attachment)
 
         create_url = f"https://networkservices.googleapis.com/v1alpha1/projects/{project_id}/locations/{region}/agentGateways?agentGatewayId={gateway_id}"
@@ -219,8 +253,7 @@ def setup_agent_gateway(session: AuthorizedSession, project_id: str, project_num
         log(f"Agent Gateway '{gateway_id}' created successfully.", "SUCCESS")
 
     # Configure AuthzExtension & AuthzPolicy (Connects Agent Gateway to IAP Enforcement)
-    log("Ensuring Agent Gateway AuthzExtension & Policy are configured...")
-    ext_id = "iap-dryrun"
+    log(f"Ensuring Agent Gateway AuthzExtension '{ext_id}' & Policy '{policy_id}' are configured...")
     authz_ext_url = f"https://networkservices.googleapis.com/v1alpha1/projects/{project_id}/locations/{region}/authzExtensions/{ext_id}"
     ext_r = session.get(authz_ext_url)
     if ext_r.status_code == 200:
@@ -243,7 +276,6 @@ def setup_agent_gateway(session: AuthorizedSession, project_id: str, project_num
                 wait_for_lro(session, f"https://networkservices.googleapis.com/v1alpha1/{op_name}")
 
     # Attach AuthzPolicy to Agent Gateway using numeric project_number
-    policy_id = "iap-dryrun-policy"
     policy_url = f"https://networksecurity.googleapis.com/v1/projects/{project_id}/locations/{region}/authzPolicies/{policy_id}"
     pol_r = session.get(policy_url)
     expected_gw_res = f"projects/{project_number}/locations/{region}/agentGateways/{gateway_id}"
@@ -407,8 +439,15 @@ def bind_iap_egressor(session: AuthorizedSession, project_number: str, org_id: s
         log(f"Notice binding iap.egressor on {res_type}/{res_id}: {r.status_code}", "WARN")
 
 
-def configure_iam_access_policy(session: AuthorizedSession, project_id: str, org_id: str):
-    policy_id = "agent-gateway-allow-policy"
+def configure_iam_access_policy(
+    session: AuthorizedSession,
+    project_id: str,
+    org_id: str,
+    policy_id: Optional[str] = None,
+    binding_id: Optional[str] = None,
+):
+    policy_id = policy_id or os.getenv("IAM_ACCESS_POLICY_ID", DEFAULT_IAM_POLICY_ID)
+    binding_id = binding_id or os.getenv("IAM_POLICY_BINDING_ID", DEFAULT_IAM_BINDING_ID)
     url = f"https://iam.googleapis.com/v3beta/projects/{project_id}/locations/global/accessPolicies/{policy_id}"
     log(f"Configuring IAM Access Policy '{policy_id}' with tool-level DENY rules...")
 
@@ -464,7 +503,6 @@ def configure_iam_access_policy(session: AuthorizedSession, project_id: str, org
                 wait_for_lro(session, f"https://iam.googleapis.com/v3beta/{op}")
 
     # Bind Access Policy to Project
-    binding_id = "agent-gateway-allow-binding"
     binding_url = f"https://iam.googleapis.com/v3beta/projects/{project_id}/locations/global/policyBindings/{binding_id}"
     b_get = session.get(binding_url)
     if b_get.status_code != 200:
@@ -601,7 +639,8 @@ def main():
         required=default_project is None,
         help="GCP Project ID (defaults to active gcloud project)",
     )
-    parser.add_argument("--region", default=os.getenv("GOOGLE_CLOUD_REGION", "us-west1"), help="GCP Region (Default: us-west1)")
+    parser.add_argument("--gateway-id", default=os.getenv("AGENT_GATEWAY_ID"), help="Agent Gateway ID (optional; auto-detected if existing, or defaults to agent-gateway-<region>)")
+    parser.add_argument("--region", default=DEFAULT_REGION, help=f"GCP Region (Default: {DEFAULT_REGION})")
     parser.add_argument("--network-attachment", default=None, help="Network Attachment URI (Optional, auto-detected)")
     parser.add_argument("--skip-deploy", action="store_true", help="Skip agents-cli deploy")
     parser.add_argument("--verify-only", action="store_true", help="Run verification tests only")
@@ -619,7 +658,14 @@ def main():
 
     enable_services(session, args.project)
     configure_org_policy(session, args.project)
-    gateway_id = setup_agent_gateway(session, args.project, project_number, args.region, args.network_attachment)
+    gateway_id = setup_agent_gateway(
+        session=session,
+        project_id=args.project,
+        project_number=project_number,
+        region=args.region,
+        gateway_id=args.gateway_id,
+        network_attachment=args.network_attachment,
+    )
     register_agent_registry_services(session, args.project, project_number, org_id, args.region)
     configure_iam_access_policy(session, args.project, org_id)
 

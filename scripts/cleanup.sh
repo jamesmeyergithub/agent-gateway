@@ -26,6 +26,8 @@ PROJECT_ID=""
 REGION=""
 SKIP_CONFIRM=false
 
+GATEWAY_ID="${AGENT_GATEWAY_ID:-}"
+
 # Parse command line flags if provided
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -35,6 +37,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     -r|--region)
       REGION="$2"
+      shift 2
+      ;;
+    -g|--gateway-id)
+      GATEWAY_ID="$2"
       shift 2
       ;;
     -y|--yes|--force)
@@ -273,8 +279,18 @@ fi
 # ------------------------------------------------------------------------------
 log_header "Step 5: Deleting Agent Gateway in '$REGION'"
 
-GATEWAY_ID="agent-gateway-${REGION}"
-[[ "$REGION" == "us-west1" ]] && GATEWAY_ID="agent-gateway-vpc-west1"
+if [[ -z "$GATEWAY_ID" ]]; then
+  # Auto-discover gateway in region if present
+  DISCOVERED_GW=$(curl -s -H "Authorization: Bearer $TOKEN" \
+    "https://networkservices.googleapis.com/v1alpha1/projects/${PROJECT_ID}/locations/${REGION}/agentGateways" \
+    | grep -o "\"projects/${PROJECT_ID}/locations/${REGION}/agentGateways/[^\"]*\"" | head -n 1 | tr -d '"' || true)
+  if [[ -n "$DISCOVERED_GW" ]]; then
+    GATEWAY_ID=$(basename "$DISCOVERED_GW")
+    log_info "Auto-discovered Agent Gateway: '$GATEWAY_ID'"
+  else
+    GATEWAY_ID="agent-gateway-${REGION}"
+  fi
+fi
 
 GATEWAY_URL="https://networkservices.googleapis.com/v1alpha1/projects/${PROJECT_ID}/locations/${REGION}/agentGateways/${GATEWAY_ID}"
 GW_CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $TOKEN" "$GATEWAY_URL")
