@@ -27,12 +27,8 @@ ca_cert_path = os.path.join(os.path.dirname(__file__), "agent_gateway_ca.crt")
 if os.path.exists(ca_cert_path):
     combined_ca_path = "/tmp/combined_agent_gateway_ca.crt"
     try:
-        with open(combined_ca_path, "w") as out_f:
-            with open(certifi.where(), "r") as certifi_f:
-                out_f.write(certifi_f.read())
-            out_f.write("\n")
-            with open(ca_cert_path, "r") as ca_f:
-                out_f.write(ca_f.read())
+        with open(combined_ca_path, "w") as out_f, open(certifi.where(), "r") as certifi_f, open(ca_cert_path, "r") as ca_f:
+            out_f.write(certifi_f.read() + "\n" + ca_f.read())
         os.environ["SSL_CERT_FILE"] = combined_ca_path
         os.environ["REQUESTS_CA_BUNDLE"] = combined_ca_path
         os.environ["CURL_CA_BUNDLE"] = combined_ca_path

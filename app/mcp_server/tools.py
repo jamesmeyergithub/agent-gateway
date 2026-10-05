@@ -54,13 +54,6 @@ def view_customer_profile(customer_id: str) -> Dict[str, Any]:
     return {"status": "success", "customer": CUSTOMER_DB[customer_id]}
 
 
-def lookup_order(order_id: str) -> Dict[str, Any]:
-    """Check order status and tracking details."""
-    if order_id not in ORDER_DB:
-        return {"error": f"Order '{order_id}' not found"}
-    return {"status": "success", "order": ORDER_DB[order_id]}
-
-
 import os
 import httpx
 
@@ -70,6 +63,37 @@ REGION = (
     else (os.getenv("GOOGLE_CLOUD_AGENT_ENGINE_LOCATION") or os.getenv("GOOGLE_CLOUD_REGION") or "us-west1")
 )
 REMOTE_MCP_SERVER = f"https://backend-tools.{REGION}.run.app"
+
+
+def lookup_order(order_id: str) -> Dict[str, Any]:
+    """Check order status and tracking details.
+    Routes outbound through the Google Cloud Agent Gateway to the backend MCP service.
+    Allowed by IAM Unified Access Policy (destination.is_registered == true).
+    """
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "lookup_order",
+            "arguments": {"order_id": order_id},
+        },
+    }
+    try:
+        resp = httpx.post(f"{REMOTE_MCP_SERVER}/mcp", json=payload, timeout=5.0)
+        if resp.status_code == 403:
+            return {
+                "status": "BLOCKED_BY_AGENT_GATEWAY",
+                "error": "HTTP 403 Forbidden: Request was blocked by Google Cloud Agent Gateway IAM Policy.",
+                "tool": "lookup_order",
+            }
+        resp.raise_for_status()
+        return resp.json()
+    except Exception:
+        # Fallback to local DB if backend MCP server is not reachable
+        if order_id not in ORDER_DB:
+            return {"error": f"Order '{order_id}' not found"}
+        return {"status": "success", "order": ORDER_DB[order_id]}
 
 
 def issue_refund(order_id: str, amount: float, reason: str = "Customer Request") -> Dict[str, Any]:
