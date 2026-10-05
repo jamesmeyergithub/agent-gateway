@@ -1,6 +1,9 @@
 # Google Cloud Agent Platform: Agent Gateway & Agent Identity Demo
 
-A complete Python reference implementation and demonstration for **Google Cloud Agent Platform** showcasing how **Agent Gateway** and native **Agent Identity** enforce least-privilege boundary control to stop AI agents from exceeding their assigned roles.
+A complete Python reference implementation and demonstration for **Google Cloud Agent Platform** showcasing how **Agent Gateway**, **IAM Unified Access Policies**, and native **Agent Identity** enforce least-privilege boundary control to stop AI agents from exceeding their assigned roles.
+
+> [!IMPORTANT]
+> **Unified Access Policies Secure Specific Tools**: In Google Cloud, **IAM Unified Access Policies (UAPs)** are the policy engine working in direct partnership with **Agent Gateway** (the Policy Enforcement Point) to secure agents from executing unauthorized tools. By evaluating Attribute-Based Access Control (ABAC) rules written in Common Expression Language (CEL)—specifically matching against `destination.agent_registry.mcp_server.tool.name`—the Agent Gateway intercepts and blocks sensitive or destructive tool invocations (such as `delete_account` and `issue_refund`) with `HTTP 403 Forbidden` at the network perimeter, regardless of prompt injections or model hallucinations.
 
 ---
 
@@ -15,7 +18,7 @@ When AI agents interact with external tools and services via Model Context Proto
 
 ## 🛡️ The Architecture: Agent Platform, Agent Gateway & Agent Identity
 
-In Google Cloud's **Agent Platform** (and Gemini Enterprise), security is architected around two core native primitives:
+In Google Cloud's **Agent Platform** (and Gemini Enterprise), security is architected around three tightly integrated native primitives:
 
 ```mermaid
 flowchart LR
@@ -48,14 +51,19 @@ flowchart LR
 ### 1. Managed Agent Gateway
 * **A Native Platform Product**: Agent Gateway is not custom application code—it is Google Cloud's managed networking, routing, and policy enforcement service within Agent Platform.
 * **Centralized Egress & Ingress**: All agent communications (tool calls, Model Context Protocol requests, and Agent-to-Agent interactions) pass through Agent Gateway.
-* **Tool-Level IAM Enforcement**: Checks whether the calling agent possesses authorization for the specific tool before forwarding the request to downstream services.
+* **Enforcement Point for Unified Access Policies**: Operates as the Policy Enforcement Point (PEP) that intercepts all outbound tool egress and delegates authorization decisions to Google Cloud IAM Unified Access Policies.
 
-### 2. First-Class Agent Identity (Workload Identity & SPIFFE)
+### 2. IAM Unified Access Policies (UAP) & Tool-Level Governance
+* **Fine-Grained Tool Authorization**: Unified Access Policies (IAM v3beta) work directly with Agent Gateway to control access to individual tools registered in the Agent Registry.
+* **CEL-Based ABAC Rules**: Policies evaluate Common Expression Language expressions on attributes such as `destination.agent_registry.mcp_server.tool.name` and `destination.is_registered`.
+* **Deterministic Tool Blocking**: Restricted actions (`delete_account`, `issue_refund`) are evaluated and terminated with `HTTP 403 Forbidden` at the gateway layer, shielding backend systems without requiring custom authorization logic in your MCP servers.
+
+### 3. First-Class Agent Identity (Workload Identity & SPIFFE)
 * **Not Generic Service Accounts**: Agents deployed on Vertex AI Agent Runtime receive native cryptographic identities minted by the Agent Platform:
   ```
   principal://agents.global.org-<ORG_ID>.system.id.goog/resources/aiplatform/projects/<PROJECT_NUM>/locations/<REGION>/reasoningEngines/<ENGINE_ID>
   ```
-* **Cryptographically Bound**: Managed by Agent Platform Runtime with short-lived certificates and mTLS session attestation directly to the Agent Gateway (`240.0.0.2:443`).
+* **Cryptographically Bound**: Managed by Agent Platform Runtime with short-lived certificates and mTLS session attestation directly to the Agent Gateway.
 * **Per-Instance Auditability**: Cloud Logging and Cloud Trace record actions taken by the exact agent instance rather than an opaque shared service account.
 
 ---
@@ -103,7 +111,7 @@ This single command automatically orchestrates:
 5. **Agent Registry**: Registers all platform endpoints and the `backend-tools` MCP server with tool specifications (`lookup_order`, `view_customer_profile`, `delete_account`, `issue_refund`).
 6. **IAP Roles**: Configures `roles/iap.egressor` on projected registry endpoints.
 7. **IAM Access Policy**: Deploys `agent-gateway-allow-policy` with prioritized `DENY` rules on destructive tools (`delete_account`, `issue_refund`) evaluated on the gateway proxy layer.
-8. **Agent Deployment**: Builds and deploys the ADK reasoning engine with `--agent-identity` and routes all egress through Agent Gateway (`240.0.0.2:443`).
+8. **Agent Deployment**: Builds and deploys the ADK reasoning engine with `--agent-identity` and routes all egress through Agent Gateway.
 9. **Live Verification**: Sends automated test requests to `:streamQuery` to verify read tools are **ALLOWED** and destructive tools are **BLOCKED BY AGENT GATEWAY** with `HTTP 403 Forbidden`.
 
 ### 3. Interactive Testing: What to Ask the Agent
