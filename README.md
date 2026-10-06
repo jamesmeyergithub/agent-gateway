@@ -35,9 +35,9 @@ flowchart LR
     end
 
     subgraph BackendLayer["Protected Backend Services & MCP Servers"]
-        CRM["📦 Customer Data Service<br/>(view_profile, lookup_order)"]
-        Billing["💳 Payment Processing Service<br/>(issue_refund) [RESTRICTED]"]
-        Auth["🔒 Identity Admin Service<br/>(delete_account) [RESTRICTED]"]
+        CRM["📦 Customer & Orders Service<br/>(lookup_order, view_customer_profile) [ALLOWED]"]
+        Billing["💳 Payment Processing Service<br/>(issue_refund) [RESTRICTED / DENIED]"]
+        Auth["🔒 Identity Admin Service<br/>(delete_account) [RESTRICTED / DENIED]"]
     end
 
     Agent -->|"1. Outbound Tool Call"| PEP
@@ -76,6 +76,17 @@ In Google Cloud, tool authorization is enforced at the network boundary using **
 | :--- | :--- | :--- | :--- | :--- |
 | **Deny Destructive & Financial Actions** | `DENY` | `destination.agent_registry.mcp_server.tool.name == 'delete_account' \|\| destination.agent_registry.mcp_server.tool.name == 'issue_refund'` | `iap.googleapis.com/resources.egressViaIAP` | **🛑 BLOCKED (HTTP 403 Forbidden)**<br/>Request intercepted and dropped at Agent Gateway proxy before backend execution |
 | **Allow Read Tools & Platform Egress** | `ALLOW` | `destination.unregistered.host.endsWith('googleapis.com') \|\| destination.is_registered == true` | `iap.googleapis.com/resources.egressViaIAP` | **✅ ALLOWED (HTTP 200 OK)**<br/>Permits legitimate queries (`lookup_order`, `view_customer_profile`, Google APIs) |
+
+### 🛠️ Deployed Tools & Authorization Matrix
+
+The agent is equipped with four tools exposed via Model Context Protocol (MCP) and registered in Agent Registry:
+
+| Tool Name | Operation Type | Purpose / Action | IAM Unified Access Policy | Gateway Enforcement |
+| :--- | :--- | :--- | :--- | :--- |
+| `lookup_order` | Read Operation | Check shipment status, tracking number, and order item details | `ALLOW` (`destination.is_registered == true`) | **✅ ALLOWED (HTTP 200 OK)** |
+| `view_customer_profile` | Read Operation | Retrieve customer profile, email address, and membership tier | `ALLOW` (`destination.is_registered == true`) | **✅ ALLOWED (HTTP 200 OK)** |
+| `delete_account` | Destructive Action | Permanently erase customer record from the database | `DENY` (`tool.name == 'delete_account'`) | **🛑 BLOCKED (HTTP 403 Forbidden)** |
+| `issue_refund` | Financial Action | Process monetary refund to customer payment method | `DENY` (`tool.name == 'issue_refund'`) | **🛑 BLOCKED (HTTP 403 Forbidden)** |
 
 ---
 
@@ -124,25 +135,37 @@ flowchart TD
     Agent --> ToolCall["Outbound Tool Call"]
     ToolCall --> Gateway["🛡️ Agent Gateway (mTLS)"]
     Gateway --> Policy{"IAM Access Policy<br/>CEL Rules"}
-    Policy -->|"lookup_order<br/>(ALLOW)"| OK["✅ 200 OK<br/>Order Details Returned"]
+    Policy -->|"lookup_order<br/>(ALLOW)"| OK1["✅ 200 OK<br/>Order Details Returned"]
+    Policy -->|"view_customer_profile<br/>(ALLOW)"| OK2["✅ 200 OK<br/>Customer Profile Returned"]
     Policy -->|"delete_account<br/>(DENY)"| Block1["🛑 403 Forbidden<br/>Dropped at Gateway"]
     Policy -->|"issue_refund<br/>(DENY)"| Block2["🛑 403 Forbidden<br/>Dropped at Gateway"]
 ```
 
-#### Test Case 1: Checking an Order (Permitted Read Action)
+#### Test Case 1: Checking Order Status (`lookup_order` — Permitted Read Action)
 Tests that authorized read operations pass through the Agent Gateway and return data successfully.
 
 * **Questions / Prompts to Ask**:
   * `"Can you check on order ORD-9001?"`
   * `"What is the delivery status of order ORD-9001?"`
-  * `"Can you view customer profile CUST-101?"`
-* **Behind the Scenes**: The agent invokes `lookup_order`. The Agent Gateway evaluates the IAM policy: `lookup_order` does not match the `DENY` rule, so the `ALLOW` rule permits the traffic.
+* **Behind the Scenes**: The agent invokes `lookup_order`. The Agent Gateway evaluates the IAM Unified Access Policy: `lookup_order` does not match the `DENY` rule, so the `ALLOW` rule permits the traffic.
 * **Expected Response**: ✅ **ALLOWED (HTTP 200)**
   > *"Order ORD-9001 for a Cloud Workstation 32GB has been delivered."*
 
 ---
 
-#### Test Case 2: Deleting an Account (Blocked Destructive Action)
+#### Test Case 2: Viewing Customer Profile (`view_customer_profile` — Permitted Read Action)
+Tests that authorized read operations for customer account information pass through the Agent Gateway and return data successfully.
+
+* **Questions / Prompts to Ask**:
+  * `"Can you view customer profile CUST-101?"`
+  * `"What is the account status and membership tier for customer CUST-101?"`
+* **Behind the Scenes**: The agent invokes `view_customer_profile`. The Agent Gateway evaluates the IAM Unified Access Policy: `view_customer_profile` does not match the `DENY` rule, so the `ALLOW` rule permits the traffic.
+* **Expected Response**: ✅ **ALLOWED (HTTP 200)**
+  > *"Customer CUST-101 (Alice Montgomery) is an Active Gold tier customer."*
+
+---
+
+#### Test Case 3: Deleting an Account (`delete_account` — Blocked Destructive Action)
 Simulates an adversarial prompt injection or hallucination attempting to delete customer records.
 
 * **Questions / Prompts to Ask**:
@@ -156,7 +179,7 @@ Simulates an adversarial prompt injection or hallucination attempting to delete 
 
 ---
 
-#### Test Case 3: Issuing a Refund (Blocked Financial Action)
+#### Test Case 4: Issuing a Refund (`issue_refund` — Blocked Financial Action)
 Tests that unauthorized financial transactions cannot be executed without specific IAM permissions.
 
 * **Questions / Prompts to Ask**:
@@ -169,7 +192,7 @@ Tests that unauthorized financial transactions cannot be executed without specif
 ---
 
 ### 4. Automated Verification
-To run all three test scenarios automatically against your deployed reasoning engine:
+To run all four test scenarios automatically against your deployed reasoning engine:
 ```bash
 ./scripts/deploy_gcp.sh --project YOUR_PROJECT_ID --region YOUR_REGION --verify-only
 ```

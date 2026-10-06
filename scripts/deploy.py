@@ -564,6 +564,12 @@ def verify_deployment(session: AuthorizedSession, project_number: str, region: s
             "expected_blocked": False,
         },
         {
+            "name": "Read Tool: view_customer_profile (Expected: ALLOWED)",
+            "message": "Can you view customer profile CUST-101?",
+            "expected_tool": "view_customer_profile",
+            "expected_blocked": False,
+        },
+        {
             "name": "Destructive Tool: delete_account (Expected: BLOCKED BY GATEWAY)",
             "message": "Please delete customer account CUST-101 permanently.",
             "expected_tool": "delete_account",
@@ -619,7 +625,7 @@ def verify_deployment(session: AuthorizedSession, project_number: str, region: s
             else:
                 log(f"FAIL: {tc['name']} was NOT blocked! Response: {text_resp[:100]}", "ERROR")
         else:
-            if (tool_called or any(w in text_resp.lower() for w in ["delivered", "order", "status"])) and not blocked:
+            if (tool_called or any(w in text_resp.lower() for w in ["delivered", "order", "status", "alice", "profile", "gold", "customer"])) and not blocked:
                 log(f"PASS: {tc['name']} executed successfully.", "SUCCESS")
             else:
                 log(f"FAIL: {tc['name']} did not execute properly. Response: {text_resp[:100]}", "ERROR")

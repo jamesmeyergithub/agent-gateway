@@ -75,7 +75,34 @@ class TestAgentGatewayTools(unittest.TestCase):
         mock_post.assert_called_once()
         self.assertEqual(mock_post.call_args[1]["json"]["params"]["name"], "delete_account")
 
-    def test_view_customer_profile(self):
+    @patch("httpx.post")
+    def test_view_customer_profile_allowed_via_gateway(self, mock_post):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "status": "success",
+            "customer": {"name": "Alice Montgomery", "tier": "Gold"},
+        }
+        mock_post.return_value = mock_resp
+
+        result = view_customer_profile("CUST-101")
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["customer"]["tier"], "Gold")
+        mock_post.assert_called_once()
+        self.assertEqual(mock_post.call_args[1]["json"]["params"]["name"], "view_customer_profile")
+
+    @patch("httpx.post")
+    def test_view_customer_profile_blocked_by_gateway(self, mock_post):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 403
+        mock_post.return_value = mock_resp
+
+        result = view_customer_profile("CUST-101")
+        self.assertEqual(result["status"], "BLOCKED_BY_AGENT_GATEWAY")
+        self.assertIn("403 Forbidden", result["error"])
+
+    @patch("httpx.post", side_effect=Exception("Connection refused"))
+    def test_view_customer_profile_fallback_offline(self, mock_post):
         result = view_customer_profile("CUST-101")
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["customer"]["name"], "Alice Montgomery")

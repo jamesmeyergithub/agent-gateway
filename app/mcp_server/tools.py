@@ -47,12 +47,6 @@ ORDER_DB = {
 }
 
 
-def view_customer_profile(customer_id: str) -> Dict[str, Any]:
-    """Retrieve customer account profile."""
-    if customer_id not in CUSTOMER_DB:
-        return {"error": f"Customer '{customer_id}' not found"}
-    return {"status": "success", "customer": CUSTOMER_DB[customer_id]}
-
 
 import os
 import httpx
@@ -63,6 +57,37 @@ REGION = (
     else (os.getenv("GOOGLE_CLOUD_AGENT_ENGINE_LOCATION") or os.getenv("GOOGLE_CLOUD_REGION") or "us-west1")
 )
 REMOTE_MCP_SERVER = f"https://backend-tools.{REGION}.run.app"
+
+
+def view_customer_profile(customer_id: str) -> Dict[str, Any]:
+    """Retrieve customer account profile.
+    Routes outbound through the Google Cloud Agent Gateway to the backend MCP service.
+    Allowed by IAM Unified Access Policy (destination.is_registered == true).
+    """
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "view_customer_profile",
+            "arguments": {"customer_id": customer_id},
+        },
+    }
+    try:
+        resp = httpx.post(f"{REMOTE_MCP_SERVER}/mcp", json=payload, timeout=5.0)
+        if resp.status_code == 403:
+            return {
+                "status": "BLOCKED_BY_AGENT_GATEWAY",
+                "error": "HTTP 403 Forbidden: Request was blocked by Google Cloud Agent Gateway IAM Policy.",
+                "tool": "view_customer_profile",
+            }
+        resp.raise_for_status()
+        return resp.json()
+    except Exception:
+        # Fallback to local DB if backend MCP server is not reachable
+        if customer_id not in CUSTOMER_DB:
+            return {"error": f"Customer '{customer_id}' not found"}
+        return {"status": "success", "customer": CUSTOMER_DB[customer_id]}
 
 
 def lookup_order(order_id: str) -> Dict[str, Any]:
